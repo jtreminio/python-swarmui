@@ -26,14 +26,14 @@ Excluded:
 - Default Comfy start script: `/Volumes/swarmui/dlbackend/ComfyUI/main.py`
 
 ## Run
-1. Create and activate a Python virtual environment:
+1. (Recommended) Create and activate a Python virtual environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-2. Bootstrap dependencies into the active environment (app + Comfy requirements, checks system deps):
+2. Bootstrap dependencies into the current Python environment (app + Comfy requirements, checks system deps):
 
 ```bash
 python setup.py
@@ -48,7 +48,7 @@ python run.py
 Manual alternative:
 
 ```bash
-pip install -e .
+pip install .
 uvicorn swarmui_clone.main:app --host 0.0.0.0 --port 7801 --reload
 ```
 

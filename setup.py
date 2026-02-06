@@ -21,6 +21,21 @@ OPTIONAL_CUSTOM_NODE_PACKAGES = [
 ]
 
 
+def should_delegate_to_setuptools(argv: list[str]) -> bool:
+    # setuptools invocations include positional commands like "egg_info" or "sdist".
+    for arg in argv[1:]:
+        if not arg.startswith("-"):
+            return True
+    return False
+
+
+def run_setuptools_cli() -> int:
+    from setuptools import setup
+
+    setup()
+    return 0
+
+
 def run_command(command: list[str], cwd: Path | None = None) -> None:
     workdir = cwd or PROJECT_ROOT
     printable = " ".join(shlex.quote(arg) for arg in command)
@@ -28,20 +43,11 @@ def run_command(command: list[str], cwd: Path | None = None) -> None:
     subprocess.run(command, cwd=str(workdir), check=True)
 
 
-def ensure_virtualenv_active() -> None:
-    base_prefix = getattr(sys, "base_prefix", sys.prefix)
-    in_venv = sys.prefix != base_prefix or hasattr(sys, "real_prefix")
-    if in_venv:
-        return
-    raise RuntimeError(
-        "No active virtual environment detected. Create and activate one before running setup.py."
-    )
-
-
 def install_project_dependencies(python_path: Path, with_dev: bool) -> None:
     run_command([str(python_path), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
     target = ".[dev]" if with_dev else "."
-    run_command([str(python_path), "-m", "pip", "install", "-e", target], cwd=PROJECT_ROOT)
+    # Avoid editable mode here so this bootstrap script does not interfere with package build hooks.
+    run_command([str(python_path), "-m", "pip", "install", target], cwd=PROJECT_ROOT)
 
 
 def read_configured_comfy_start_script(python_path: Path) -> Path:
@@ -117,7 +123,7 @@ def install_system_dependencies() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Install python-swarmui dependencies into the current active environment."
+        description="Install python-swarmui dependencies into the current Python environment."
     )
     parser.add_argument(
         "--with-dev",
@@ -141,7 +147,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    ensure_virtualenv_active()
     python_path = Path(sys.executable)
     print(f"[setup] Using active Python interpreter: {python_path}")
 
@@ -163,4 +168,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if should_delegate_to_setuptools(sys.argv):
+        raise SystemExit(run_setuptools_cli())
     raise SystemExit(main())
