@@ -20,10 +20,10 @@ Excluded:
 - Shipping a bundled ComfyUI backend
 
 ## Default mount assumptions
-- SwarmUI root: `/Volumes/swarmui`
+- Standalone ComfyUI root: `/Users/your-user/comfyui` (example)
 - Model root: `/Volumes/models`
 - Wildcards root: `/Volumes/aiconfigs/Wildcards`
-- Default Comfy start script: `/Volumes/swarmui/dlbackend/ComfyUI/main.py`
+- Default Comfy start script: `comfyui/main.py` (project-relative)
 
 ## Run
 1. (Recommended) Create and activate a Python virtual environment:
@@ -116,6 +116,7 @@ The app prefers `config.yaml` when present. This file can be edited through `PUT
 
 Common settings:
 - `server.host` and `server.port` for network binding
+- `comfy.start_script` for your standalone ComfyUI entrypoint (for example: `/opt/comfyui/main.py`)
 - `paths.model_roots` for model mounts
 - `paths.output_root` for generated images
 - `paths.wildcards_root` for wildcard files

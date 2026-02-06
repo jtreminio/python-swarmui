@@ -32,3 +32,4 @@ def test_settings_service_creates_new_primary_config_file(tmp_path):
 
     assert primary.exists()
     assert cfg.server.host == "0.0.0.0"
+    assert cfg.comfy.start_script == "comfyui/main.py"

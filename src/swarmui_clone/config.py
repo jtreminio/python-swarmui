@@ -29,7 +29,7 @@ class ServerConfig(BaseModel):
 
 
 class ComfyConfig(BaseModel):
-    start_script: str = "/Volumes/swarmui/dlbackend/ComfyUI/main.py"
+    start_script: str = "comfyui/main.py"
     gpu_id: str = "0"
     extra_args: str = ""
     disable_internal_args: bool = False

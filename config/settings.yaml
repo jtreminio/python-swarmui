@@ -35,7 +35,7 @@ server:
   cors_allow_origin: ''
   log_level: INFO
 comfy:
-  start_script: /Volumes/swarmui/dlbackend/ComfyUI/main.py
+  start_script: comfyui/main.py
   gpu_id: '0'
   extra_args: ''
   disable_internal_args: false

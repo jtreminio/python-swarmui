@@ -9,5 +9,6 @@ venv/
 data/runtime/
 data/output/
 data/comfy-auto-model.yaml
+comfyui/
 config.yaml
 config/settings.local.yaml
