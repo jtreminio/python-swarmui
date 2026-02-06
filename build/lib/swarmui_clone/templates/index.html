@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Python SwarmUI Clone</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <div class="background-grid"></div>
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Single-user clone</p>
+        <h1>Python SwarmUI</h1>
+        <p class="subtitle">ComfyUI-backed generation with Swarm-style local orchestration.</p>
+      </div>
+      <div class="backend-box">
+        <p id="backend-status" class="status-pill">Backend: unknown</p>
+        <div class="button-row">
+          <button id="start-backend">Start</button>
+          <button id="restart-backend">Restart</button>
+          <button id="stop-backend" class="danger">Stop</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <h2>Generate</h2>
+        <form id="generate-form">
+          <label>
+            Model
+            <select id="model" required></select>
+          </label>
+          <label>
+            Prompt
+            <textarea id="prompt" rows="4" required placeholder="A cinematic photo of a storm over neon city streets"></textarea>
+          </label>
+          <label>
+            Negative Prompt
+            <textarea id="negative-prompt" rows="2" placeholder="blurry, low detail"></textarea>
+          </label>
+          <div class="grid-2">
+            <label>Steps <input id="steps" type="number" min="1" max="200" value="30" /></label>
+            <label>CFG <input id="cfg" type="number" min="1" max="50" step="0.5" value="7" /></label>
+          </div>
+          <div class="grid-3">
+            <label>Width <input id="width" type="number" min="64" max="4096" step="8" value="1024" /></label>
+            <label>Height <input id="height" type="number" min="64" max="4096" step="8" value="1024" /></label>
+            <label>Batch <input id="batch-size" type="number" min="1" max="8" value="1" /></label>
+          </div>
+          <div class="grid-3">
+            <label>Sampler <input id="sampler" value="euler" /></label>
+            <label>Scheduler <input id="scheduler" value="normal" /></label>
+            <label>Seed <input id="seed" type="number" value="-1" /></label>
+          </div>
+          <button type="submit" class="primary">Queue Generation</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Jobs</h2>
+        <p id="jobs-meta" class="meta"></p>
+        <div id="jobs" class="jobs-list"></div>
+      </section>
+
+      <section class="panel gallery-panel">
+        <h2>Output Gallery</h2>
+        <div id="gallery" class="gallery"></div>
+      </section>
+    </main>
+
+    <template id="job-template">
+      <article class="job-item">
+        <div class="job-header">
+          <strong class="job-id"></strong>
+          <span class="job-status"></span>
+        </div>
+        <p class="job-message"></p>
+        <div class="progress-wrap"><div class="progress"></div></div>
+        <button class="cancel tiny">Cancel</button>
+      </article>
+    </template>
+
+    <script src="/static/js/app.js" defer></script>
+  </body>
+</html>

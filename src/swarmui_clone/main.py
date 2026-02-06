@@ -12,10 +12,26 @@ from fastapi.staticfiles import StaticFiles
 
 from swarmui_clone.api.routes import build_compat_router, build_router
 from swarmui_clone.app_state import AppState
+from swarmui_clone.config import app_root
 from swarmui_clone.utils.logging_utils import configure_terminal_logging
 
 state = AppState()
 LOGGER = logging.getLogger("swarmui_clone.main")
+PACKAGE_ROOT = Path(__file__).resolve().parent
+
+
+def resolve_asset_dir(relative_path: str) -> Path:
+    candidates = [
+        PACKAGE_ROOT / relative_path,
+        app_root() / "src" / "swarmui_clone" / relative_path,
+        app_root() / "swarmui_clone" / relative_path,
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+
+    # Keep FastAPI behavior explicit if files are truly missing.
+    return candidates[0]
 
 
 @asynccontextmanager
@@ -49,7 +65,7 @@ if state.get_config().server.cors_allow_origin:
 
 app.mount(
     "/static",
-    StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
+    StaticFiles(directory=str(resolve_asset_dir("static"))),
     name="static",
 )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -29,7 +30,7 @@ class ServerConfig(BaseModel):
 
 
 class ComfyConfig(BaseModel):
-    start_script: str = "/Volumes/swarmui/dlbackend/ComfyUI/main.py"
+    start_script: str = "comfyui/main.py"
     gpu_id: str = "0"
     extra_args: str = ""
     disable_internal_args: bool = False
@@ -69,6 +70,14 @@ class AppConfig(BaseModel):
 
 
 def app_root() -> Path:
+    override = os.environ.get("SWARMUI_APP_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+
+    cwd = Path.cwd()
+    if (cwd / "run.py").exists() and ((cwd / "config").exists() or (cwd / "config.yaml").exists()):
+        return cwd.resolve()
+
     return Path(__file__).resolve().parents[2]
 
 

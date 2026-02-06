@@ -29,6 +29,13 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+swarmui_clone = [
+  "static/css/*.css",
+  "static/js/*.js",
+  "templates/*.html",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

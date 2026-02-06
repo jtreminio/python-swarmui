@@ -13,12 +13,25 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
 from swarmui_clone.app_state import AppState
-from swarmui_clone.config import AppConfig, resolve_path
+from swarmui_clone.config import AppConfig, app_root, resolve_path
 from swarmui_clone.schemas import GenerationRequest
 from swarmui_clone.services.model_index import MODEL_EXTENSIONS
 from swarmui_clone.utils.pathing import safe_relative_path
 
 LOGGER = logging.getLogger("swarmui_clone.api.compat")
+
+
+def _resolve_template_file(template_name: str) -> Path:
+    candidates = [
+        Path(__file__).resolve().parents[1] / "templates" / template_name,
+        app_root() / "src" / "swarmui_clone" / "templates" / template_name,
+        app_root() / "swarmui_clone" / "templates" / template_name,
+    ]
+    for path in candidates:
+        if path.exists() and path.is_file():
+            return path
+
+    return candidates[0]
 
 def _resolve_output_file(state: AppState, image_path: str) -> Path:
     output_root = resolve_path(state.get_config().paths.output_root)
@@ -931,7 +944,7 @@ def build_router(state: AppState) -> APIRouter:
 
     @router.get("/", response_class=HTMLResponse)
     async def index() -> str:
-        index_path = Path(__file__).resolve().parents[1] / "templates" / "index.html"
+        index_path = _resolve_template_file("index.html")
         return index_path.read_text(encoding="utf-8")
 
     return router
