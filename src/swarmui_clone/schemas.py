@@ -10,6 +10,7 @@ class GenerationRequest(BaseModel):
     prompt: str
     negative_prompt: str = ""
     model: str
+    model_architecture: Literal["auto", "checkpoint", "flux"] = "auto"
     steps: int = Field(default=30, ge=1, le=200)
     cfg_scale: float = Field(default=7.0, gt=0.0, le=50.0)
     seed: int = -1
@@ -20,6 +21,10 @@ class GenerationRequest(BaseModel):
     denoise: float = Field(default=1.0, gt=0.0, le=1.0)
     batch_size: int = Field(default=1, ge=1, le=16)
     filename_prefix: str = "swarmui"
+    flux_clip_name1: str = ""
+    flux_clip_name2: str = ""
+    flux_vae_name: str = ""
+    flux_guidance: float | None = Field(default=None, gt=0.0, le=100.0)
     custom_workflow: dict[str, Any] | None = None
 
 

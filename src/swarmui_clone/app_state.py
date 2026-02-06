@@ -33,6 +33,7 @@ class AppState:
             comfy_client=self.comfy_client,
             wildcard_service=self.wildcards,
             workflow_builder=self.workflow_builder,
+            model_catalog_provider=self.model_index.scan_all,
         )
 
     def get_config(self) -> AppConfig:

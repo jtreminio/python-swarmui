@@ -39,12 +39,15 @@ function setBackendStatusText(snapshot) {
 function renderModelList(models) {
   const modelSelect = document.getElementById("model");
   const items = models["Stable-Diffusion"] || [];
+  const priorValue = modelSelect.value;
+  const preferredValue = modelSelect.dataset.userSelected || priorValue;
   modelSelect.innerHTML = "";
   if (!items.length) {
     const option = document.createElement("option");
     option.value = "";
     option.textContent = "No models found";
     modelSelect.appendChild(option);
+    modelSelect.dataset.userSelected = "";
     return;
   }
   for (const model of items) {
@@ -53,6 +56,15 @@ function renderModelList(models) {
     option.textContent = model;
     modelSelect.appendChild(option);
   }
+
+  if (preferredValue && items.includes(preferredValue)) {
+    modelSelect.value = preferredValue;
+    modelSelect.dataset.userSelected = preferredValue;
+    return;
+  }
+
+  modelSelect.value = items[0];
+  modelSelect.dataset.userSelected = items[0];
 }
 
 function renderJobs(jobs) {
@@ -131,6 +143,11 @@ async function refreshAll() {
 }
 
 async function boot() {
+  const modelSelect = document.getElementById("model");
+  modelSelect.addEventListener("change", () => {
+    modelSelect.dataset.userSelected = modelSelect.value;
+  });
+
   document.getElementById("start-backend").onclick = async () => {
     try {
       await apiRequest("/backend/start", { method: "POST" });

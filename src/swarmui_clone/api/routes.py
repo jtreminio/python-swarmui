@@ -106,6 +106,18 @@ def _coerce_float(value: Any, default: float) -> float:
         return default
 
 
+def _coerce_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    value_text = str(value).strip()
+    if not value_text:
+        return None
+    try:
+        return float(value_text)
+    except (TypeError, ValueError):
+        return None
+
+
 def _coerce_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -653,10 +665,16 @@ def _build_generation_request_from_swarm(
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt is required.")
 
+    model_architecture = str(payload.get("model_architecture", payload.get("modelArchitecture", "auto")))
+    model_architecture = model_architecture.strip().lower()
+    if model_architecture not in {"auto", "checkpoint", "flux"}:
+        model_architecture = "auto"
+
     request = GenerationRequest(
         prompt=prompt,
         negative_prompt=negative_prompt,
         model=model,
+        model_architecture=model_architecture,
         steps=_coerce_int(payload.get("steps"), cfg.generation.default_steps),
         cfg_scale=_coerce_float(
             payload.get("cfg_scale", payload.get("cfgscale")),
@@ -670,6 +688,12 @@ def _build_generation_request_from_swarm(
         denoise=_coerce_float(payload.get("denoise"), 1.0),
         batch_size=batch_size,
         filename_prefix=str(payload.get("filename_prefix", "swarmui")),
+        flux_clip_name1=str(payload.get("flux_clip_name1", payload.get("clip_name1", ""))).strip(),
+        flux_clip_name2=str(payload.get("flux_clip_name2", payload.get("clip_name2", ""))).strip(),
+        flux_vae_name=str(payload.get("flux_vae_name", payload.get("vae_name", payload.get("vae", "")))).strip(),
+        flux_guidance=_coerce_optional_float(
+            payload.get("flux_guidance", payload.get("guidance"))
+        ),
     )
     return images_count, request
 

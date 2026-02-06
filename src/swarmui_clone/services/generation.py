@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import random
 import shutil
 import time
@@ -17,6 +18,8 @@ from swarmui_clone.services.wildcards import WildcardService
 from swarmui_clone.services.workflow_builder import WorkflowBuilder
 from swarmui_clone.utils.pathing import ensure_directory
 
+LOGGER = logging.getLogger("swarmui_clone.generation")
+
 
 class GenerationService:
     def __init__(
@@ -26,12 +29,14 @@ class GenerationService:
         comfy_client: ComfyClient,
         wildcard_service: WildcardService,
         workflow_builder: WorkflowBuilder,
+        model_catalog_provider=None,
     ) -> None:
         self._config_provider = config_provider
         self._comfy_manager = comfy_manager
         self._comfy_client = comfy_client
         self._wildcard_service = wildcard_service
         self._workflow_builder = workflow_builder
+        self._model_catalog_provider = model_catalog_provider
 
         self._jobs: dict[str, GenerationJob] = {}
         self._jobs_lock = asyncio.Lock()
@@ -185,6 +190,43 @@ class GenerationService:
 
         return images
 
+    @staticmethod
+    def _extract_execution_error(prompt_id: str, history_payload: dict) -> str | None:
+        prompt_data = history_payload.get(prompt_id) or {}
+        status_info = prompt_data.get("status") or {}
+        messages = status_info.get("messages") or []
+
+        for entry in messages:
+            if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                continue
+            event_name = str(entry[0])
+            event_data = entry[1] if isinstance(entry[1], dict) else {}
+
+            if event_name == "execution_error":
+                node_type = str(event_data.get("node_type", "unknown node"))
+                exception_message = str(event_data.get("exception_message", "Execution failed")).strip()
+                if exception_message:
+                    return f"{node_type}: {exception_message}"
+                return f"{node_type}: Execution failed."
+            if event_name == "execution_interrupted":
+                return "Generation interrupted."
+
+        status_str = str(status_info.get("status_str", "")).strip().lower()
+        if status_str == "error":
+            return "ComfyUI reported a generation error."
+
+        return None
+
+    def _available_models(self) -> dict[str, list[str]]:
+        if self._model_catalog_provider is None:
+            return {}
+        try:
+            result = self._model_catalog_provider()
+            return result if isinstance(result, dict) else {}
+        except Exception as ex:
+            LOGGER.debug("Unable to resolve model catalog for workflow build: %s", ex)
+            return {}
+
     async def _run_generation(self, job_id: str) -> None:
         job = await self.get_job(job_id)
         if not job:
@@ -204,6 +246,7 @@ class GenerationService:
             seed=job.generation_seed or 0,
             prompt=job.expanded_prompt or job.request.prompt,
             negative_prompt=job.expanded_negative_prompt or job.request.negative_prompt,
+            available_models=self._available_models(),
         )
 
         client_id = str(uuid.uuid4())
@@ -231,6 +274,10 @@ class GenerationService:
                 return
 
             history = await self._comfy_client.get_history(prompt_id)
+            execution_error = self._extract_execution_error(prompt_id, history)
+            if execution_error:
+                raise RuntimeError(execution_error)
+
             images = await self._extract_images(job_id, history)
             if images:
                 await self._update_job(

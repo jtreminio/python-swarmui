@@ -96,6 +96,33 @@ def test_build_generation_request_from_swarm_maps_aliases():
     assert request.batch_size == 2
 
 
+def test_build_generation_request_from_swarm_maps_flux_fields():
+    cfg = AppConfig()
+    state = StubState(
+        cfg,
+        {"Stable-Diffusion": ["flux1-dev.safetensors"]},
+        [],
+    )
+
+    payload = {
+        "prompt": "test prompt",
+        "model": "flux1-dev.safetensors",
+        "model_architecture": "flux",
+        "clip_name1": "clip_l.safetensors",
+        "clip_name2": "t5xxl_fp16.safetensors",
+        "vae": "ae.safetensors",
+        "guidance": "3.5",
+    }
+
+    _, request = _build_generation_request_from_swarm(state, payload)
+
+    assert request.model_architecture == "flux"
+    assert request.flux_clip_name1 == "clip_l.safetensors"
+    assert request.flux_clip_name2 == "t5xxl_fp16.safetensors"
+    assert request.flux_vae_name == "ae.safetensors"
+    assert request.flux_guidance == 3.5
+
+
 def test_build_generation_request_from_swarm_falls_back_to_first_model():
     cfg = AppConfig()
     state = StubState(
