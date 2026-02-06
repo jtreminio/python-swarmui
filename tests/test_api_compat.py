@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 
 import pytest
 
 from swarmui_clone.api.routes import (
     _build_generation_request_from_swarm,
+    _compat_describe_model,
+    _compat_forward_metadata_request,
+    _compat_get_model_hash,
     _compat_list_loaded_models,
     _compat_list_models,
     _compat_select_model,
@@ -200,3 +204,60 @@ async def test_compat_list_loaded_models_uses_default_and_running_jobs():
         "base/running.safetensors",
         "base/succeeded.safetensors",
     ]
+
+
+@pytest.mark.asyncio
+async def test_compat_describe_model_finds_model_and_returns_metadata(tmp_path):
+    cfg = AppConfig()
+    model_root = tmp_path / "models"
+    model_dir = model_root / "Stable-Diffusion"
+    model_dir.mkdir(parents=True)
+    model_file = model_dir / "demo-model.safetensors"
+    model_file.write_bytes(b"weights")
+
+    cfg.paths.model_roots = [str(model_root)]
+    state = StubState(cfg, {"Stable-Diffusion": ["demo-model.safetensors"]}, [])
+
+    result = await _compat_describe_model(
+        state,
+        {"modelName": "demo-model", "subtype": "Stable-Diffusion"},
+    )
+
+    assert "model" in result
+    assert result["model"]["name"] == "demo-model.safetensors"
+    assert result["model"]["local"] is True
+    assert result["model"]["is_supported_model_format"] is True
+
+
+@pytest.mark.asyncio
+async def test_compat_get_model_hash_matches_sha256(tmp_path):
+    cfg = AppConfig()
+    model_root = tmp_path / "models"
+    model_dir = model_root / "Stable-Diffusion"
+    model_dir.mkdir(parents=True)
+    model_file = model_dir / "hash-me.safetensors"
+    model_file.write_bytes(b"abc123")
+
+    cfg.paths.model_roots = [str(model_root)]
+    state = StubState(cfg, {"Stable-Diffusion": ["hash-me.safetensors"]}, [])
+
+    result = await _compat_get_model_hash(
+        state,
+        {"modelName": "hash-me", "subtype": "Stable-Diffusion"},
+    )
+
+    expected = hashlib.sha256(b"abc123").hexdigest()
+    assert result == {"hash": expected}
+
+
+@pytest.mark.asyncio
+async def test_compat_forward_metadata_request_rejects_non_civitai():
+    cfg = AppConfig()
+    state = StubState(cfg, {"Stable-Diffusion": []}, [])
+
+    result = await _compat_forward_metadata_request(
+        state,
+        {"url": "https://example.com/api"},
+    )
+
+    assert result == {"error": "Invalid URL."}

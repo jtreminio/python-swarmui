@@ -26,20 +26,32 @@ Excluded:
 - Default Comfy start script: `/Volumes/swarmui/dlbackend/ComfyUI/main.py`
 
 ## Run
-1. Create and activate a Python 3.11+ virtual environment.
-2. Install dependencies:
+1. Bootstrap a fresh system (creates `.venv`, installs app + Comfy requirements, checks system deps):
+
+```bash
+python setup.py
+```
+
+2. Activate virtual environment:
+
+```bash
+source .venv/bin/activate
+```
+
+3. Start server (uses `config.yaml` host/port):
+
+```bash
+python run.py
+```
+
+Manual alternative:
 
 ```bash
 pip install -e .
+uvicorn swarmui_clone.main:app --host 0.0.0.0 --port 7801 --reload
 ```
 
-3. Start server:
-
-```bash
-uvicorn swarmui_clone.main:app --host 127.0.0.1 --port 7801 --reload
-```
-
-4. Open [http://127.0.0.1:7801/api/](http://127.0.0.1:7801/api/)
+4. Open locally at [http://127.0.0.1:7801/api/](http://127.0.0.1:7801/api/) or from LAN at `http://<your-machine-ip>:7801/api/`.
 
 ## API quick reference
 - `GET /api/health`
@@ -49,6 +61,7 @@ uvicorn swarmui_clone.main:app --host 127.0.0.1 --port 7801 --reload
 - `POST /api/backend/start`
 - `POST /api/backend/stop`
 - `POST /api/backend/restart`
+- `GET /api/backend/preflight` (dependency/start-script preflight diagnostics)
 - `GET /api/models`
 - `GET /api/wildcards`
 - `POST /api/generate`
@@ -66,20 +79,45 @@ Swarm compatibility routes:
 - `WS /API/GenerateText2ImageWS`
 - `GET|POST /API/ListImages`
 - `GET|POST /API/ListModels`
+- `GET|POST /API/DescribeModel`
 - `GET|POST /API/ListLoadedModels`
 - `GET|POST /API/SelectModel`
 - `WS /API/SelectModelWS`
+- `GET|POST /API/GetModelHash`
+- `GET|POST /API/ForwardMetadataRequest`
 - `GET|POST /API/TriggerRefresh`
 - `GET|POST /API/InterruptAll`
 - `GET /View/{relative_path}`
 - `GET /Output/{relative_path}`
 - `ANY /ComfyBackendDirect/{path}`
 
+## Logging behavior
+Running with:
+
+```bash
+python run.py
+```
+
+forces terminal DEBUG logging for app, API compatibility routes, backend manager events, and Comfy process stdout/stderr relay.
+
+Preflight behavior:
+- At startup, if `comfy.enable_preflight_checks` is enabled, the app runs a `--help` probe against the configured Comfy start script and checks for import/module errors.
+- If preflight fails and `comfy.skip_auto_start_on_preflight_error` is true, auto-start is skipped and warnings are printed to terminal.
+
 ## Configuration
 Primary config file:
+- `/Users/jtreminio/www/python-swarmui/config.yaml`
+
+Legacy fallback:
 - `/Users/jtreminio/www/python-swarmui/config/settings.yaml`
 
-It is auto-generated on first run and can be edited through `PUT /api/settings` or directly on disk.
+The app prefers `config.yaml` when present. This file can be edited through `PUT /api/settings` or directly on disk.
+
+Common settings:
+- `server.host` and `server.port` for network binding
+- `paths.model_roots` for model mounts
+- `paths.output_root` for generated images
+- `paths.wildcards_root` for wildcard files
 
 ## Detailed plan
 See:

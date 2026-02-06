@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+import copy
+import json
+import logging
 import os
 import random
+import re
 import shlex
 import socket
 import subprocess
@@ -10,7 +15,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import httpx
 import yaml
@@ -18,6 +23,8 @@ import yaml
 from swarmui_clone.config import AppConfig, resolve_path
 from swarmui_clone.schemas import BackendStatus
 from swarmui_clone.utils.pathing import ensure_directory
+
+LOGGER = logging.getLogger("swarmui_clone.comfy")
 
 FORWARDED_COMFY_FOLDERS = [
     "unet",
@@ -32,6 +39,8 @@ FORWARDED_COMFY_FOLDERS = [
 ]
 
 UPSCALE_FOLDERS = ["ESRGAN", "RealESRGAN", "SwinIR", "upscale-models", "upscale_models"]
+MODULE_NOT_FOUND_PATTERN = re.compile(r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]")
+IMPORT_ERROR_PATTERN = re.compile(r"ImportError: cannot import name ['\"]([^'\"]+)['\"]")
 
 
 class ComfyProcessManager:
@@ -46,6 +55,7 @@ class ComfyProcessManager:
         self._log_lock = threading.Lock()
         self._lock = asyncio.Lock()
         self._monitor_task: asyncio.Task[None] | None = None
+        self._last_preflight: dict[str, Any] | None = None
 
     @property
     def api_url(self) -> str | None:
@@ -60,6 +70,273 @@ class ComfyProcessManager:
     def _append_log(self, line: str) -> None:
         with self._log_lock:
             self._log_tail.append(line)
+        LOGGER.debug("%s", line)
+
+    @staticmethod
+    def _tail_lines(text: str, limit: int = 60) -> list[str]:
+        lines = [line for line in text.splitlines() if line.strip()]
+        return lines[-limit:]
+
+    @staticmethod
+    def _discover_import_targets(start_script: Path) -> list[str]:
+        try:
+            source = start_script.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(start_script))
+        except Exception:
+            return []
+
+        modules: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name:
+                        modules.add(alias.name.strip())
+            elif isinstance(node, ast.ImportFrom):
+                if node.level > 0:
+                    continue
+                if node.module:
+                    modules.add(node.module.strip())
+
+        modules.discard("__future__")
+        return sorted(name for name in modules if name)
+
+    async def _run_import_probe(
+        self,
+        python_executable: str,
+        workdir: Path,
+        env: dict[str, str],
+        modules: list[str],
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "ok": True,
+            "command": [],
+            "missing_modules": [],
+            "import_errors": [],
+            "errors": [],
+            "output_tail": [],
+            "timed_out": False,
+            "return_code": None,
+        }
+        if not modules:
+            return result
+
+        script = (
+            "import importlib.util\n"
+            "import json\n"
+            "modules = json.loads('''" + json.dumps(modules) + "''')\n"
+            "missing = []\n"
+            "import_errors = []\n"
+            "for module_name in modules:\n"
+            "    try:\n"
+            "        found = importlib.util.find_spec(module_name)\n"
+            "        if found is None:\n"
+            "            missing.append(module_name)\n"
+            "    except ModuleNotFoundError:\n"
+            "        missing.append(module_name)\n"
+            "    except Exception as ex:\n"
+            "        import_errors.append(f\"{module_name}: {ex}\")\n"
+            "print(json.dumps({\n"
+            "    'missing_modules': sorted(set(missing)),\n"
+            "    'import_errors': sorted(set(import_errors)),\n"
+            "}))\n"
+        )
+        cmd = [python_executable, "-s", "-c", script]
+        result["command"] = cmd
+
+        try:
+            completed = await asyncio.wait_for(
+                asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    cwd=str(workdir),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            result["ok"] = False
+            result["timed_out"] = True
+            result["errors"].append(f"Import probe timed out after {timeout_seconds}s.")
+            return result
+        except Exception as ex:
+            result["ok"] = False
+            result["errors"].append(f"Import probe failed to run: {type(ex).__name__}: {ex}")
+            return result
+
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        combined = f"{stdout}\n{stderr}".strip()
+        result["return_code"] = completed.returncode
+        result["output_tail"] = self._tail_lines(combined)
+
+        parsed: dict[str, Any] = {}
+        for line in reversed(stdout.splitlines()):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                parsed = json.loads(stripped)
+                break
+            except Exception:
+                continue
+
+        result["missing_modules"] = sorted(set(parsed.get("missing_modules", [])))
+        result["import_errors"] = sorted(set(parsed.get("import_errors", [])))
+
+        if result["missing_modules"]:
+            result["errors"].append(
+                "Import probe missing python modules: " + ", ".join(result["missing_modules"])
+            )
+        if result["import_errors"]:
+            result["errors"].append(
+                "Import probe import errors: " + ", ".join(result["import_errors"])
+            )
+        if completed.returncode != 0 and not result["errors"]:
+            result["errors"].append(f"Import probe command failed with return code {completed.returncode}.")
+
+        result["ok"] = not result["errors"]
+        return result
+
+    async def preflight_check(self, timeout_seconds: int = 20) -> dict[str, Any]:
+        cfg = self._config_provider()
+        start_script = resolve_path(cfg.comfy.start_script)
+        result: dict[str, Any] = {
+            "ok": False,
+            "checked_at": time.time(),
+            "start_script": str(start_script),
+            "python_executable": None,
+            "command": [],
+            "return_code": None,
+            "timed_out": False,
+            "missing_modules": [],
+            "import_errors": [],
+            "import_probe_modules": [],
+            "import_probe_command": [],
+            "import_probe_output_tail": [],
+            "warnings": [],
+            "errors": [],
+            "output_tail": [],
+        }
+
+        if not start_script.exists():
+            result["errors"].append(f"ComfyUI start script does not exist: {start_script}")
+            self._last_preflight = result
+            return result
+        if start_script.suffix.lower() not in {".py", ".sh", ".bat"}:
+            result["errors"].append(
+                f"ComfyUI start script must end with .py, .sh, or .bat: {start_script.name}"
+            )
+            self._last_preflight = result
+            return result
+
+        env = os.environ.copy()
+        self._clean_python_environment(env)
+        if start_script.suffix.lower() == ".py":
+            python_exe, script_arg, workdir = self._resolve_python_launch(start_script)
+            result["python_executable"] = python_exe
+            cmd = [python_exe, "-s", script_arg, "--help"]
+        else:
+            workdir = start_script.parent
+            cmd = [str(start_script), "--help"]
+
+        result["command"] = cmd
+        LOGGER.debug("Running Comfy preflight: cwd=%s cmd=%s", workdir, " ".join(cmd))
+
+        try:
+            completed = await asyncio.wait_for(
+                asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    cwd=str(workdir),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            result["timed_out"] = True
+            result["errors"].append(
+                f"Preflight command timed out after {timeout_seconds}s."
+            )
+            self._last_preflight = result
+            return result
+        except Exception as ex:
+            result["errors"].append(f"Failed to run preflight command: {type(ex).__name__}: {ex}")
+            self._last_preflight = result
+            return result
+
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        combined = f"{stdout}\n{stderr}".strip()
+        result["return_code"] = completed.returncode
+        result["output_tail"] = self._tail_lines(combined)
+        result["missing_modules"] = sorted(set(MODULE_NOT_FOUND_PATTERN.findall(combined)))
+        result["import_errors"] = sorted(set(IMPORT_ERROR_PATTERN.findall(combined)))
+
+        if result["missing_modules"]:
+            result["errors"].append(
+                "Missing python modules: " + ", ".join(result["missing_modules"])
+            )
+        if result["import_errors"]:
+            result["errors"].append(
+                "Import errors detected: " + ", ".join(result["import_errors"])
+            )
+
+        if completed.returncode != 0 and not result["errors"]:
+            if "Traceback (most recent call last)" in combined:
+                result["errors"].append(
+                    f"Preflight command failed with return code {completed.returncode}."
+                )
+            else:
+                result["warnings"].append(
+                    f"Preflight command returned {completed.returncode} without import errors."
+                )
+
+        if start_script.suffix.lower() == ".py":
+            import_probe_modules = self._discover_import_targets(start_script)
+            result["import_probe_modules"] = import_probe_modules
+            import_probe = await self._run_import_probe(
+                python_executable=python_exe,
+                workdir=workdir,
+                env=env,
+                modules=import_probe_modules,
+                timeout_seconds=timeout_seconds,
+            )
+            result["import_probe_command"] = import_probe["command"]
+            result["import_probe_output_tail"] = import_probe["output_tail"]
+            if import_probe["timed_out"]:
+                result["errors"].append(f"Import probe timed out after {timeout_seconds}s.")
+            if import_probe["missing_modules"]:
+                result["missing_modules"] = sorted(
+                    set(result["missing_modules"]).union(import_probe["missing_modules"])
+                )
+            if import_probe["import_errors"]:
+                probe_import_errors = []
+                for value in import_probe["import_errors"]:
+                    probe_import_errors.append(value)
+                    if ":" in value:
+                        probe_import_errors.append(value.split(":", 1)[0].strip())
+                result["import_errors"] = sorted(
+                    set(result["import_errors"]).union(probe_import_errors)
+                )
+            result["errors"].extend(
+                message
+                for message in import_probe["errors"]
+                if message not in result["errors"]
+            )
+
+        result["ok"] = not result["errors"]
+        self._last_preflight = result
+        return result
+
+    def last_preflight(self) -> dict[str, Any] | None:
+        if self._last_preflight is None:
+            return None
+        return copy.deepcopy(self._last_preflight)
 
     def _read_stream(self, stream: object, label: str) -> None:
         if stream is None:
@@ -276,7 +553,7 @@ class ComfyProcessManager:
             except Exception as ex:
                 self._append_log(f"[MANAGER] Auto-restart failed: {ex}")
 
-    async def start(self) -> BackendStatus:
+    async def start(self, run_preflight: bool = True) -> BackendStatus:
         async with self._lock:
             if self._process and self._process.poll() is None:
                 return self.snapshot()
@@ -286,9 +563,23 @@ class ComfyProcessManager:
             self._status = "starting"
             self._last_error = None
 
+            if run_preflight and cfg.comfy.enable_preflight_checks:
+                preflight = await self.preflight_check(timeout_seconds=cfg.comfy.preflight_timeout_seconds)
+                if not preflight["ok"]:
+                    error_text = (
+                        preflight["errors"][0]
+                        if preflight.get("errors")
+                        else "ComfyUI preflight failed."
+                    )
+                    self._status = "error"
+                    self._last_error = f"Preflight failed: {error_text}"
+                    self._append_log(f"[MANAGER] {self._last_error}")
+                    raise RuntimeError(self._last_error)
+
             model_yaml = self.emit_model_paths_config()
             cmd, workdir, env, port = self._build_command(cfg, model_yaml)
             self._append_log(f"[MANAGER] Launching ComfyUI: {' '.join(cmd)}")
+            LOGGER.debug("Launching ComfyUI from %s on port %s", workdir, port)
 
             process = subprocess.Popen(
                 cmd,
@@ -321,10 +612,12 @@ class ComfyProcessManager:
                 self._status = "running"
                 self._last_error = None
             self._append_log("[MANAGER] ComfyUI backend is healthy")
+            LOGGER.debug("ComfyUI backend healthy on %s", self.api_url)
         except Exception as ex:
             async with self._lock:
                 self._status = "error"
                 self._last_error = str(ex)
+            LOGGER.exception("Failed to start ComfyUI backend")
             await self.stop()
             raise
 
@@ -340,6 +633,7 @@ class ComfyProcessManager:
 
             self._expected_shutdown = True
             self._append_log("[MANAGER] Stopping ComfyUI")
+            LOGGER.debug("Stopping ComfyUI process pid=%s", process.pid)
 
         if process.poll() is None:
             process.terminate()

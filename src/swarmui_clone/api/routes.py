@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +15,10 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from swarmui_clone.app_state import AppState
 from swarmui_clone.config import AppConfig, resolve_path
 from swarmui_clone.schemas import GenerationRequest
+from swarmui_clone.services.model_index import MODEL_EXTENSIONS
 from swarmui_clone.utils.pathing import safe_relative_path
 
+LOGGER = logging.getLogger("swarmui_clone.api.compat")
 
 def _resolve_output_file(state: AppState, image_path: str) -> Path:
     output_root = resolve_path(state.get_config().paths.output_root)
@@ -165,6 +170,196 @@ async def _safe_close_websocket(websocket: WebSocket) -> None:
         await websocket.close()
     except RuntimeError:
         pass
+
+
+def _normalize_model_name(name: str) -> str:
+    clean = name.replace("\\", "/")
+    while "//" in clean:
+        clean = clean.replace("//", "/")
+    return clean.lstrip("/").strip()
+
+
+def _subtype_folders(cfg: AppConfig, subtype: str) -> list[str] | None:
+    mapping: dict[str, list[str]] = {
+        "Stable-Diffusion": cfg.paths.sd_model_folders,
+        "LoRA": cfg.paths.lora_folders,
+        "VAE": cfg.paths.vae_folders,
+        "Embedding": cfg.paths.embedding_folders,
+        "ControlNet": cfg.paths.controlnet_folders,
+        "CLIP": cfg.paths.clip_folders,
+        "CLIPVision": cfg.paths.clip_vision_folders,
+    }
+    return mapping.get(subtype)
+
+
+def _resolve_model_identity(state: AppState, model_name: str, subtype: str) -> tuple[str | None, Path | None]:
+    cfg = state.get_config()
+    all_models = state.model_index.scan_all()
+    if subtype not in all_models:
+        return None, None
+
+    normalized = _normalize_model_name(model_name)
+    candidates = [normalized]
+    if normalized and not normalized.lower().endswith(".safetensors"):
+        candidates.insert(0, f"{normalized}.safetensors")
+
+    selected_name: str | None = None
+    for candidate in candidates:
+        if candidate in all_models[subtype]:
+            selected_name = candidate
+            break
+    if selected_name is None:
+        return None, None
+
+    folders = _subtype_folders(cfg, subtype) or []
+    for root_text in cfg.paths.model_roots:
+        root = resolve_path(root_text)
+        for folder in folders:
+            candidate_path = (root / folder / selected_name).resolve()
+            if candidate_path.exists() and candidate_path.is_file():
+                return selected_name, candidate_path
+
+    if Path(selected_name).is_absolute():
+        absolute = Path(selected_name).resolve()
+        if absolute.exists() and absolute.is_file():
+            return selected_name, absolute
+
+    return selected_name, None
+
+
+def _model_net_object(state: AppState, model_name: str, subtype: str, model_path: Path | None) -> dict[str, Any]:
+    cfg = state.get_config()
+    loaded = cfg.generation.default_model.strip() == model_name
+    title = Path(model_name).name
+    is_supported = Path(model_name).suffix.lower() in MODEL_EXTENSIONS
+
+    date_text = ""
+    if model_path and model_path.exists():
+        date_text = datetime.fromtimestamp(model_path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+    return {
+        "name": model_name,
+        "title": title,
+        "author": "",
+        "description": "",
+        "preview_image": None,
+        "loaded": loaded,
+        "architecture": subtype,
+        "class": subtype,
+        "compat_class": subtype,
+        "standard_width": cfg.generation.default_width,
+        "standard_height": cfg.generation.default_height,
+        "license": "",
+        "date": date_text,
+        "usage_hint": "",
+        "trigger_phrase": "",
+        "merged_from": "",
+        "tags": [],
+        "is_supported_model_format": is_supported,
+        "is_negative_embedding": False,
+        "local": model_path is not None,
+    }
+
+
+def _hash_file_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as file_handle:
+        while True:
+            chunk = file_handle.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _describe_wildcard(state: AppState, model_name: str) -> dict[str, Any] | None:
+    normalized = _normalize_model_name(model_name)
+    wildcard_names = state.wildcards.list_wildcards()
+    if normalized not in wildcard_names:
+        return None
+
+    wildcard_root = resolve_path(state.get_config().paths.wildcards_root)
+    wildcard_file = (wildcard_root / f"{normalized}.txt").resolve()
+    description = ""
+    if wildcard_file.exists() and wildcard_file.is_file():
+        try:
+            lines = wildcard_file.read_text(encoding="utf-8").splitlines()
+            non_empty = [line.strip() for line in lines if line.strip()]
+            if non_empty:
+                description = non_empty[0][:200]
+        except Exception:
+            description = ""
+
+    return {
+        "name": normalized,
+        "title": Path(normalized).name,
+        "description": description,
+        "local": True,
+        "type": "wildcard",
+    }
+
+
+async def _compat_describe_model(state: AppState, payload: dict[str, Any]) -> dict[str, Any]:
+    subtype = str(payload.get("subtype", "Stable-Diffusion"))
+    model_name = str(payload.get("modelName", payload.get("model", ""))).strip()
+    if not model_name:
+        return _swarm_error("Model not found.")
+
+    if subtype == "Wildcards":
+        wildcard = _describe_wildcard(state, model_name)
+        if wildcard is None:
+            LOGGER.debug("DescribeModel wildcard not found: %s", model_name)
+            return _swarm_error("Model not found.")
+        return wildcard
+
+    if subtype not in state.model_index.scan_all():
+        return _swarm_error("Invalid sub-type.")
+
+    if subtype == "Stable-Diffusion" and model_name.lower() == "(none)":
+        none_model = _model_net_object(state, "(None)", subtype, None)
+        none_model["description"] = "No model selected."
+        return {"model": none_model}
+
+    resolved_name, resolved_path = _resolve_model_identity(state, model_name, subtype)
+    if not resolved_name:
+        LOGGER.debug("DescribeModel not found: subtype=%s model=%s", subtype, model_name)
+        return _swarm_error("Model not found.")
+
+    return {"model": _model_net_object(state, resolved_name, subtype, resolved_path)}
+
+
+async def _compat_get_model_hash(state: AppState, payload: dict[str, Any]) -> dict[str, Any]:
+    subtype = str(payload.get("subtype", "Stable-Diffusion"))
+    if subtype not in state.model_index.scan_all():
+        return _swarm_error("Invalid sub-type.")
+
+    model_name = str(payload.get("modelName", payload.get("model", ""))).strip()
+    resolved_name, resolved_path = _resolve_model_identity(state, model_name, subtype)
+    if not resolved_name or not resolved_path:
+        return _swarm_error("Model not found.")
+
+    digest = _hash_file_sha256(resolved_path)
+    return {"hash": digest}
+
+
+async def _compat_forward_metadata_request(state: AppState, payload: dict[str, Any]) -> dict[str, Any]:
+    _ = state
+    url = str(payload.get("url", "")).strip()
+    if not url.startswith("https://civitai.com/"):
+        return _swarm_error("Invalid URL.")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            body = response.text
+    except Exception as ex:
+        return _swarm_error(f"{type(ex).__name__}: {ex}")
+
+    try:
+        return {"response": json.loads(body)}
+    except Exception as ex:
+        return _swarm_error(f"{type(ex).__name__}: {ex}")
 
 
 async def _swarm_get_current_status(state: AppState) -> dict[str, Any]:
@@ -652,6 +847,16 @@ def build_router(state: AppState) -> APIRouter:
     async def backend_status() -> dict[str, Any]:
         return state.comfy_manager.snapshot().model_dump(mode="json")
 
+    @router.get("/backend/preflight")
+    async def backend_preflight(refresh: bool = True) -> dict[str, Any]:
+        cfg = state.get_config()
+        if refresh or state.comfy_manager.last_preflight() is None:
+            return await state.comfy_manager.preflight_check(
+                timeout_seconds=cfg.comfy.preflight_timeout_seconds
+            )
+        cached = state.comfy_manager.last_preflight()
+        return cached if cached is not None else {}
+
     @router.post("/backend/start")
     async def backend_start() -> dict[str, Any]:
         try:
@@ -746,9 +951,12 @@ def build_compat_router(state: AppState) -> APIRouter:
                 "GenerateText2ImageWS",
                 "ListImages",
                 "ListModels",
+                "DescribeModel",
                 "ListLoadedModels",
                 "SelectModel",
                 "SelectModelWS",
+                "GetModelHash",
+                "ForwardMetadataRequest",
                 "TriggerRefresh",
                 "InterruptAll",
             ],
@@ -758,6 +966,12 @@ def build_compat_router(state: AppState) -> APIRouter:
     async def swarm_api_dispatch(call_name: str, request: Request) -> dict[str, Any]:
         payload = await _extract_payload(request)
         call = call_name.lower()
+        LOGGER.debug(
+            "Compatibility API call '%s' via %s with keys=%s",
+            call_name,
+            request.method,
+            sorted(payload.keys()),
+        )
 
         if call == "getcurrentstatus":
             return await _swarm_get_current_status(state)
@@ -769,12 +983,18 @@ def build_compat_router(state: AppState) -> APIRouter:
             return _compat_list_images(state, payload)
         if call == "listmodels":
             return _compat_list_models(state, payload)
+        if call == "describemodel":
+            return await _compat_describe_model(state, payload)
         if call == "listloadedmodels":
             return await _compat_list_loaded_models(state)
         if call == "selectmodel":
             return await _compat_select_model(state, payload)
         if call == "selectmodelws":
             return await _compat_select_model(state, payload)
+        if call == "getmodelhash":
+            return await _compat_get_model_hash(state, payload)
+        if call == "forwardmetadatarequest":
+            return await _compat_forward_metadata_request(state, payload)
         if call == "triggerrefresh":
             return {
                 "success": True,
@@ -792,6 +1012,7 @@ def build_compat_router(state: AppState) -> APIRouter:
         await websocket.accept()
         try:
             payload = await _extract_ws_payload(websocket)
+            LOGGER.debug("Compatibility WS GenerateText2ImageWS payload keys=%s", sorted(payload.keys()))
             await _compat_generate_text_to_image_ws(state, websocket, payload)
         except WebSocketDisconnect:
             return
@@ -809,6 +1030,7 @@ def build_compat_router(state: AppState) -> APIRouter:
         await websocket.accept()
         try:
             payload = await _extract_ws_payload(websocket)
+            LOGGER.debug("Compatibility WS SelectModelWS payload keys=%s", sorted(payload.keys()))
             result = await _compat_select_model(state, payload)
             await websocket.send_json(result)
             await websocket.send_json(await _swarm_get_current_status(state))

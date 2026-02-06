@@ -4,8 +4,19 @@ from pathlib import Path
 
 import yaml
 
-from swarmui_clone.config import AppConfig
+from swarmui_clone.config import AppConfig, app_root
 from swarmui_clone.utils.pathing import ensure_directory
+
+
+def resolve_settings_path(root: Path | None = None) -> Path:
+    base = root or app_root()
+    primary = base / "config.yaml"
+    legacy = base / "config" / "settings.yaml"
+    if primary.exists():
+        return primary
+    if legacy.exists():
+        return legacy
+    return primary
 
 
 class SettingsService:

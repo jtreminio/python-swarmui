@@ -5,6 +5,9 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+*.egg-info/
 data/runtime/
 data/output/
+data/comfy-auto-model.yaml
+uv.lock
 config/settings.local.yaml

@@ -22,7 +22,7 @@ class PathsConfig(BaseModel):
 
 
 class ServerConfig(BaseModel):
-    host: str = "127.0.0.1"
+    host: str = "0.0.0.0"
     port: int = 7801
     cors_allow_origin: str = ""
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -40,6 +40,9 @@ class ComfyConfig(BaseModel):
     swarm_validated_frontend_version: str = "1.37.11"
     auto_restart: bool = True
     auto_start_on_boot: bool = True
+    enable_preflight_checks: bool = True
+    preflight_timeout_seconds: int = 20
+    skip_auto_start_on_preflight_error: bool = True
     startup_timeout_seconds: int = 180
     backend_starting_port: int = 7820
     randomize_backend_port: bool = False
