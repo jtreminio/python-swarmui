@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_VENV_DIR = PROJECT_ROOT / ".venv"
 OPTIONAL_CUSTOM_NODE_PACKAGES = [
     "diffusers",
     "opencv-python-headless",
@@ -29,20 +28,14 @@ def run_command(command: list[str], cwd: Path | None = None) -> None:
     subprocess.run(command, cwd=str(workdir), check=True)
 
 
-def venv_python_path(venv_dir: Path) -> Path:
-    if os.name == "nt":
-        return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
-
-
-def ensure_venv(venv_dir: Path) -> Path:
-    python_path = venv_python_path(venv_dir)
-    if python_path.exists():
-        print(f"[setup] Reusing virtual environment: {venv_dir}")
-        return python_path
-    print(f"[setup] Creating virtual environment: {venv_dir}")
-    run_command([sys.executable, "-m", "venv", str(venv_dir)])
-    return python_path
+def ensure_virtualenv_active() -> None:
+    base_prefix = getattr(sys, "base_prefix", sys.prefix)
+    in_venv = sys.prefix != base_prefix or hasattr(sys, "real_prefix")
+    if in_venv:
+        return
+    raise RuntimeError(
+        "No active virtual environment detected. Create and activate one before running setup.py."
+    )
 
 
 def install_project_dependencies(python_path: Path, with_dev: bool) -> None:
@@ -124,12 +117,7 @@ def install_system_dependencies() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Bootstrap python-swarmui dependencies on a fresh system."
-    )
-    parser.add_argument(
-        "--venv",
-        default=str(DEFAULT_VENV_DIR),
-        help="Virtual environment directory to create/use (default: .venv).",
+        description="Install python-swarmui dependencies into the current active environment."
     )
     parser.add_argument(
         "--with-dev",
@@ -153,8 +141,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    venv_dir = Path(args.venv).expanduser()
-    python_path = ensure_venv(venv_dir)
+    ensure_virtualenv_active()
+    python_path = Path(sys.executable)
+    print(f"[setup] Using active Python interpreter: {python_path}")
 
     install_project_dependencies(python_path, with_dev=args.with_dev)
 
@@ -169,7 +158,6 @@ def main() -> int:
         install_system_dependencies()
 
     print("[setup] Complete.")
-    print(f"[setup] Activate venv: source {venv_dir}/bin/activate")
     print("[setup] Start app: python run.py")
     return 0
 

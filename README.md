@@ -26,16 +26,17 @@ Excluded:
 - Default Comfy start script: `/Volumes/swarmui/dlbackend/ComfyUI/main.py`
 
 ## Run
-1. Bootstrap a fresh system (creates `.venv`, installs app + Comfy requirements, checks system deps):
+1. Create and activate a Python virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+2. Bootstrap dependencies into the active environment (app + Comfy requirements, checks system deps):
 
 ```bash
 python setup.py
-```
-
-2. Activate virtual environment:
-
-```bash
-source .venv/bin/activate
 ```
 
 3. Start server (uses `config.yaml` host/port):

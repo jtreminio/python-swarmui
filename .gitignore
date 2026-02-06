@@ -9,5 +9,5 @@ venv/
 data/runtime/
 data/output/
 data/comfy-auto-model.yaml
-uv.lock
+config.yaml
 config/settings.local.yaml
